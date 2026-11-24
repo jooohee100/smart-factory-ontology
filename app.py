@@ -135,3 +135,164 @@ with llm:
                     r=requests.post(base+'/api/chat',headers=headers,json={'model':name,'stream':False,'messages':[{'role':'system','content':'한국어로 답하고 근거 시각과 객체 ID를 표시하라. 탐지 결과와 관계 후보를 구분하고 실제 제어를 단정하지 마라. 데이터에 없으면 모른다고 답하라.'},{'role':'user','content':q+'\n분석 데이터:\n'+payload}]},timeout=180); r.raise_for_status(); st.session_state.answer=r.json()['message']['content']
             except Exception: st.error('LLM 응답 실패. Ollama 연결 및 모델 상태를 확인하세요.')
     if 'answer' in st.session_state: st.write(st.session_state.answer)
+with llm:
+    import time
+    import hmac
+    import threading
+
+    st.subheader('LLM Prompt · Ollama / Qwen')
+
+    def setting(key, default=''):
+        try:
+            return st.secrets.get(key, os.getenv(key, default))
+        except Exception:
+            return os.getenv(key, default)
+
+    base = setting(
+        'OLLAMA_URL', 'http://127.0.0.1:11434'
+    ).rstrip('/')
+
+    name = setting('OLLAMA_MODEL', 'qwen3:8b')
+    username = setting('OLLAMA_USERNAME')
+    password = setting('OLLAMA_PASSWORD')
+    access_code = setting('LLM_ACCESS_CODE')
+
+    auth = (username, password) if username and password else None
+
+    headers = {
+        'ngrok-skip-browser-warning': 'true'
+    }
+
+    @st.cache_resource
+    def llm_lock():
+        return threading.Lock()
+
+    st.caption(f'연결 모델: {name}')
+
+    entered_code = st.text_input(
+        'LLM 이용 비밀번호',
+        type='password'
+    )
+
+    allowed = bool(access_code) and hmac.compare_digest(
+        entered_code, access_code
+    )
+
+    if not allowed:
+        st.info('LLM 이용 비밀번호를 입력하세요.')
+
+    if st.button('LLM 연결 확인', disabled=not allowed):
+        try:
+            r = requests.get(
+                base + '/api/tags',
+                headers=headers,
+                auth=auth,
+                timeout=15
+            )
+            r.raise_for_status()
+
+            names = [m['name'] for m in r.json()['models']]
+
+            if name in names:
+                st.success(f'LLM 연결 성공: {name}')
+            else:
+                st.warning('연결 성공, 지정 모델 없음')
+
+        except Exception:
+            st.error('Ollama 또는 ngrok 연결 상태를 확인하세요.')
+
+    scope = st.radio(
+        '질문 범위',
+        ['선택 시점', '전체 분석 시점'],
+        horizontal=True
+    )
+
+    q = st.text_area(
+        '질문',
+        placeholder='로봇팔과 컨베이어의 관계를 설명해줘',
+        max_chars=1000
+    )
+
+    if st.button(
+        '질문하기',
+        disabled=not allowed or not q.strip()
+    ):
+        last = st.session_state.get('last_llm_request', 0)
+
+        if time.time() - last < 30:
+            st.warning('30초 후 다시 질문해주세요.')
+
+        else:
+            selected = [s] if scope == '선택 시점' else snaps
+
+            evidence = [
+                {
+                    'time': x['time'],
+                    'objects': x['rows'],
+                    'relations_candidates': x['relations'],
+                    'process': x['process']
+                }
+                for x in selected
+            ]
+
+            payload = json.dumps(evidence, ensure_ascii=False)
+
+            if len(payload) > 45000:
+                st.warning('데이터가 너무 큽니다. 분석 범위를 줄여주세요.')
+
+            elif not llm_lock().acquire(blocking=False):
+                st.warning('다른 질문을 처리 중입니다. 잠시 후 다시 시도하세요.')
+
+            else:
+                st.session_state.last_llm_request = time.time()
+                st.session_state.pop('answer', None)
+
+                try:
+                    with st.spinner('지식그래프 기반 LLM 분석 중...'):
+                        r = requests.post(
+                            base + '/api/chat',
+                            headers=headers,
+                            auth=auth,
+                            json={
+                                'model': name,
+                                'stream': False,
+                                'think': False,
+                                'options': {
+                                    'num_predict': 1024
+                                },
+                                'messages': [
+                                    {
+                                        'role': 'system',
+                                        'content': (
+                                            '너는 스마트팩토리 분석 전문가이다. '
+                                            '제공된 지식그래프 데이터를 기반으로 '
+                                            '한국어로 답변하라. '
+                                            '객체 ID와 근거 시각을 표시하라. '
+                                            '탐지 결과와 관계 후보를 구분하라. '
+                                            '실제 제어를 단정하지 마라. '
+                                            '데이터에 없는 내용은 모른다고 답하라.'
+                                        )
+                                    },
+                                    {
+                                        'role': 'user',
+                                        'content': q + '\n분석 데이터:\n' + payload
+                                    }
+                                ]
+                            },
+                            timeout=180
+                        )
+
+                        r.raise_for_status()
+                        st.session_state.answer = (
+                            r.json()['message']['content']
+                        )
+
+                except Exception:
+                    st.error('LLM 응답 실패. 연결 상태를 확인하세요.')
+
+                finally:
+                    llm_lock().release()
+
+    if allowed and 'answer' in st.session_state:
+        st.markdown('### LLM 분석 결과')
+        st.write(st.session_state.answer)
