@@ -109,32 +109,7 @@ with kg:
     limit=st.slider('표시 노드 수',1,max(2,G.number_of_nodes()),min(160,G.number_of_nodes()))
     order=sorted(G,key=lambda n: {'instance':0,'process':1,'class':2,'frame':3}.get(G.nodes[n].get('kind'),4)); graph_view(G.subgraph(order[:limit]))
     st.download_button('전체 그래프 JSON',json.dumps(nx.node_link_data(G),ensure_ascii=False,default=str),'graph.json')
-with llm:
-    st.subheader('LLM Prompt · Ollama / Qwen')
-    def setting(key,default):
-        try: return st.secrets.get(key,os.getenv(key,default))
-        except Exception: return os.getenv(key,default)
-    base=setting('OLLAMA_URL','http://127.0.0.1:11434').rstrip('/'); name=setting('OLLAMA_MODEL','qwen2.5:3b'); token=setting('OLLAMA_TOKEN','')
-    headers={'Authorization':f'Bearer {token}'} if token else {}
-    st.caption(f'모델: {name} · 공개 배포 시 서버에서 접근 가능한 인증된 Ollama 주소 필요')
-    if st.button('LLM 연결 확인'):
-        try:
-            r=requests.get(base+'/api/tags',headers=headers,timeout=8); r.raise_for_status(); names=[m['name'] for m in r.json()['models']]; st.success('연결됨: '+', '.join(names)) if name in names else st.warning('연결됨, 지정 모델 없음: '+', '.join(names))
-        except Exception: st.error('Ollama 연결 실패: 서버 주소, 인증, 실행 상태 확인')
-    scope=st.radio('질문 범위',['선택 시점','전체 분석 시점'],horizontal=True)
-    q=st.text_area('질문',placeholder='로봇팔과 컨베이어의 관계를 설명해줘')
-    if st.button('질문하기',disabled=not q.strip()):
-        selected=[s] if scope=='선택 시점' else snaps
-        evidence=[{'time':x['time'],'objects':x['rows'],'relations_candidates':x['relations'],'process':x['process']} for x in selected]
-        # Bound prompt size; do not silently omit evidence.
-        payload=json.dumps(evidence,ensure_ascii=False)
-        if len(payload)>45000: st.warning('전체 데이터가 너무 큽니다. 선택 시점으로 질문하거나 분석 시점 수를 줄여주세요.')
-        else:
-            try:
-                with st.spinner('LLM 추론 중'):
-                    r=requests.post(base+'/api/chat',headers=headers,json={'model':name,'stream':False,'messages':[{'role':'system','content':'한국어로 답하고 근거 시각과 객체 ID를 표시하라. 탐지 결과와 관계 후보를 구분하고 실제 제어를 단정하지 마라. 데이터에 없으면 모른다고 답하라.'},{'role':'user','content':q+'\n분석 데이터:\n'+payload}]},timeout=180); r.raise_for_status(); st.session_state.answer=r.json()['message']['content']
-            except Exception: st.error('LLM 응답 실패. Ollama 연결 및 모델 상태를 확인하세요.')
-    if 'answer' in st.session_state: st.write(st.session_state.answer)
+
 with llm:
     import time
     import hmac
